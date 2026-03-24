@@ -38,14 +38,12 @@ interface Site {
 interface CreateSiteInput {
   name?: unknown
   url?: unknown
-  slug?: unknown
   checkInterval?: unknown
 }
 
 interface ValidatedSiteInput {
   name: string
   url: string
-  slug: string
   checkInterval: number
 }
 
@@ -72,6 +70,14 @@ const notFound = () =>
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0
 
+const createSlugBase = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+
 const parseSiteId = (pathname: string) => {
   const match = pathname.match(/^\/api\/sites\/(\d+)$/)
 
@@ -91,8 +97,8 @@ const validateSiteInput = (payload: CreateSiteInput): string | null => {
     return 'URL is required'
   }
 
-  if (!isNonEmptyString(payload.slug)) {
-    return 'Slug is required'
+  if (createSlugBase(payload.name) === '') {
+    return 'Name must include letters or numbers for slug generation'
   }
 
   if (typeof payload.checkInterval !== 'number' || payload.checkInterval <= 0) {
@@ -111,9 +117,28 @@ const validateSiteInput = (payload: CreateSiteInput): string | null => {
 const toValidatedSiteInput = (payload: CreateSiteInput): ValidatedSiteInput => ({
   name: payload.name as string,
   url: payload.url as string,
-  slug: payload.slug as string,
   checkInterval: payload.checkInterval as number,
 })
+
+const generateUniqueSlug = async (name: string, env: Env) => {
+  const slugBase = createSlugBase(name)
+  let slug = slugBase
+  let suffix = 1
+
+  while (true) {
+    const existingSite = await env.edgepulse_db
+      .prepare('SELECT id FROM sites WHERE slug = ?')
+      .bind(slug)
+      .first<{ id: number }>()
+
+    if (!existingSite) {
+      return slug
+    }
+
+    suffix += 1
+    slug = `${slugBase}-${suffix}`
+  }
+}
 
 const getSites = async (env: Env) => {
   const result = await env.edgepulse_db
@@ -162,6 +187,8 @@ const createSite = async (request: Request, env: Env) => {
   const siteInput = toValidatedSiteInput(payload)
 
   try {
+    const slug = await generateUniqueSlug(siteInput.name, env)
+
     const insertResult = await env.edgepulse_db
       .prepare(
         `INSERT INTO sites (name, url, slug, check_interval)
@@ -170,7 +197,7 @@ const createSite = async (request: Request, env: Env) => {
       .bind(
         siteInput.name.trim(),
         siteInput.url.trim(),
-        siteInput.slug.trim(),
+        slug,
         siteInput.checkInterval,
       )
       .run()
