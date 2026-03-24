@@ -52,6 +52,12 @@ interface SiteCheck {
   checked_at: string
 }
 
+interface PublicSiteInfo {
+  name: string
+  url: string
+  slug: string
+}
+
 interface CreateSiteInput {
   name?: unknown
   url?: unknown
@@ -223,6 +229,21 @@ const getActiveSites = async (env: Env) => {
        ORDER BY id ASC`,
     )
     .all<MonitorableSite>()
+
+  return result.results
+}
+
+const getRecentChecksBySiteId = async (siteId: number, env: Env) => {
+  const result = await env.edgepulse_db
+    .prepare(
+      `SELECT id, site_id, status, status_code, response_time, error_message, checked_at
+       FROM checks
+       WHERE site_id = ?
+       ORDER BY checked_at DESC, id DESC
+       LIMIT 10`,
+    )
+    .bind(siteId)
+    .all<SiteCheck>()
 
   return result.results
 }
@@ -455,10 +476,18 @@ const getPublicSite = async (pathname: string, env: Env) => {
       )
     }
 
+    const checks = await getRecentChecksBySiteId(site.id, env)
+    const publicSiteInfo: PublicSiteInfo = {
+      name: site.name,
+      url: site.url,
+      slug: site.slug,
+    }
+
     return json({
       success: true,
       data: {
-        slug: site.slug,
+        site: publicSiteInfo,
+        checks,
       },
     })
   } catch (error) {
