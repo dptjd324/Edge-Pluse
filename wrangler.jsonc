@@ -3,6 +3,17 @@
   "name": "edgepulse",
   "main": "src/worker.ts",
   "compatibility_date": "2026-03-24",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "edgepulse_db",
+      "database_name": "edgepulse-db",
+      "database_id": "793d7b08-c69d-4905-8408-a25167301126"
+    }
+  ],
   "observability": {
     "enabled": true
   }

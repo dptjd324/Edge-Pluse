@@ -9,8 +9,13 @@ interface D1Database {
   prepare: (query: string) => D1PreparedStatement
 }
 
+interface Fetcher {
+  fetch: (request: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+}
+
 export interface Env {
   edgepulse_db: D1Database
+  ASSETS: Fetcher
 }
 
 interface WorkerExecutionContext {
@@ -103,6 +108,19 @@ interface MonitoringBatchResult {
 
 const json = <T>(payload: ApiResponse<T>, init?: ResponseInit) =>
   Response.json(payload, init)
+
+const serveAppAsset = async (request: Request, env: Env) => {
+  const response = await env.ASSETS.fetch(request)
+
+  if (response.status !== 404) {
+    return response
+  }
+
+  const url = new URL(request.url)
+  url.pathname = '/index.html'
+
+  return env.ASSETS.fetch(new Request(url.toString(), request))
+}
 
 const notFound = () =>
   json(
@@ -633,6 +651,10 @@ const worker: WorkerHandler<Env> = {
   async fetch(request, env) {
     const { pathname } = new URL(request.url)
 
+    if (!pathname.startsWith('/api') && pathname !== '/health') {
+      return serveAppAsset(request, env)
+    }
+
     if (pathname === '/health') {
       try {
         const result = await env.edgepulse_db
@@ -658,16 +680,6 @@ const worker: WorkerHandler<Env> = {
           { status: 500 },
         )
       }
-    }
-
-    if (pathname === '/') {
-      return json({
-        success: true,
-        data: {
-          name: 'EdgePulse',
-          message: 'Cloudflare Worker connected to D1',
-        },
-      })
     }
 
     if (pathname === '/api/sites' && request.method === 'GET') {
