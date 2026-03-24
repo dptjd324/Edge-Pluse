@@ -18,6 +18,11 @@ interface WorkerExecutionContext {
   passThroughOnException: () => void
 }
 
+interface ScheduledController {
+  cron: string
+  scheduledTime: number
+}
+
 interface ApiResponse<T> {
   success: boolean
   data?: T
@@ -65,6 +70,11 @@ interface WorkerHandler<Environment> {
     env: Environment,
     ctx: WorkerExecutionContext,
   ) => Response | Promise<Response>
+  scheduled?: (
+    controller: ScheduledController,
+    env: Environment,
+    ctx: WorkerExecutionContext,
+  ) => void | Promise<void>
 }
 
 interface MonitorableSite {
@@ -177,6 +187,19 @@ const getSiteById = async (siteId: number, env: Env) =>
     )
     .bind(siteId)
     .first<Site>()
+
+const getActiveSites = async (env: Env) => {
+  const result = await env.edgepulse_db
+    .prepare(
+      `SELECT id, url
+       FROM sites
+       WHERE is_active = 1
+       ORDER BY id ASC`,
+    )
+    .all<MonitorableSite>()
+
+  return result.results
+}
 
 const storeCheckResult = async (
   siteId: number,
@@ -558,6 +581,16 @@ const worker: WorkerHandler<Env> = {
     }
 
     return notFound()
+  },
+  async scheduled(_controller, env, ctx) {
+    const monitoringJob = (async () => {
+      const activeSites = await getActiveSites(env)
+
+      await Promise.all(activeSites.map((site) => monitorSite(site, env)))
+    })()
+
+    ctx.waitUntil(monitoringJob)
+    await monitoringJob
   },
 }
 
