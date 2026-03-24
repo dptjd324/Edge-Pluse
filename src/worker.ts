@@ -35,6 +35,18 @@ interface Site {
   updated_at: string
 }
 
+type CheckStatus = 'up' | 'down'
+
+interface SiteCheck {
+  id: number
+  site_id: number
+  status: CheckStatus
+  status_code: number | null
+  response_time: number | null
+  error_message: string | null
+  checked_at: string
+}
+
 interface CreateSiteInput {
   name?: unknown
   url?: unknown
@@ -53,6 +65,18 @@ interface WorkerHandler<Environment> {
     env: Environment,
     ctx: WorkerExecutionContext,
   ) => Response | Promise<Response>
+}
+
+interface MonitorableSite {
+  id: number
+  url: string
+}
+
+interface MonitoringResult {
+  status: CheckStatus
+  statusCode: number | null
+  responseTime: number | null
+  errorMessage: string | null
 }
 
 const json = <T>(payload: ApiResponse<T>, init?: ResponseInit) =>
@@ -120,6 +144,9 @@ const toValidatedSiteInput = (payload: CreateSiteInput): ValidatedSiteInput => (
   checkInterval: payload.checkInterval as number,
 })
 
+const buildStatusErrorMessage = (statusCode: number) =>
+  `Request failed with status ${statusCode}`
+
 const generateUniqueSlug = async (name: string, env: Env) => {
   const slugBase = createSlugBase(name)
   let slug = slugBase
@@ -138,6 +165,81 @@ const generateUniqueSlug = async (name: string, env: Env) => {
     suffix += 1
     slug = `${slugBase}-${suffix}`
   }
+}
+
+const storeCheckResult = async (
+  siteId: number,
+  result: MonitoringResult,
+  env: Env,
+) => {
+  const insertResult = await env.edgepulse_db
+    .prepare(
+      `INSERT INTO checks (site_id, status, status_code, response_time, error_message)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      siteId,
+      result.status,
+      result.statusCode,
+      result.responseTime,
+      result.errorMessage,
+    )
+    .run()
+
+  const checkId = insertResult.meta?.last_row_id
+
+  if (typeof checkId !== 'number') {
+    throw new Error('Check result was stored but no id was returned')
+  }
+
+  const check = await env.edgepulse_db
+    .prepare(
+      `SELECT id, site_id, status, status_code, response_time, error_message, checked_at
+       FROM checks
+       WHERE id = ?`,
+    )
+    .bind(checkId)
+    .first<SiteCheck>()
+
+  if (!check) {
+    throw new Error('Stored check result could not be loaded')
+  }
+
+  return check
+}
+
+export const monitorSite = async (site: MonitorableSite, env: Env) => {
+  const startedAt = performance.now()
+  let result: MonitoringResult
+
+  try {
+    const response = await fetch(site.url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'cache-control': 'no-cache',
+      },
+    })
+
+    const responseTime = Math.round(performance.now() - startedAt)
+    const isUp = response.ok
+
+    result = {
+      status: isUp ? 'up' : 'down',
+      statusCode: response.status,
+      responseTime,
+      errorMessage: isUp ? null : buildStatusErrorMessage(response.status),
+    }
+  } catch (error) {
+    result = {
+      status: 'down',
+      statusCode: null,
+      responseTime: Math.round(performance.now() - startedAt),
+      errorMessage: error instanceof Error ? error.message : 'Monitoring request failed',
+    }
+  }
+
+  return storeCheckResult(site.id, result, env)
 }
 
 const getSites = async (env: Env) => {
