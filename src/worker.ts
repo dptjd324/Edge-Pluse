@@ -129,6 +129,16 @@ const parseSiteIdFromPath = (pathname: string, suffix = '') => {
   return Number(match[1])
 }
 
+const parsePublicSlugFromPath = (pathname: string) => {
+  const match = pathname.match(/^\/api\/public\/([^/]+)$/)
+
+  if (!match) {
+    return null
+  }
+
+  return decodeURIComponent(match[1])
+}
+
 const validateSiteInput = (payload: CreateSiteInput): string | null => {
   if (!isNonEmptyString(payload.name)) {
     return 'Name is required'
@@ -192,6 +202,16 @@ const getSiteById = async (siteId: number, env: Env) =>
        WHERE id = ?`,
     )
     .bind(siteId)
+    .first<Site>()
+
+const getSiteBySlug = async (slug: string, env: Env) =>
+  env.edgepulse_db
+    .prepare(
+      `SELECT id, name, url, slug, check_interval, is_active, created_at, updated_at
+       FROM sites
+       WHERE slug = ?`,
+    )
+    .bind(slug)
     .first<Site>()
 
 const getActiveSites = async (env: Env) => {
@@ -415,6 +435,46 @@ const getSites = async (env: Env) => {
   })
 }
 
+const getPublicSite = async (pathname: string, env: Env) => {
+  const slug = parsePublicSlugFromPath(pathname)
+
+  if (!isNonEmptyString(slug)) {
+    return notFound()
+  }
+
+  try {
+    const site = await getSiteBySlug(slug, env)
+
+    if (!site) {
+      return json(
+        {
+          success: false,
+          error: 'Site not found',
+        },
+        { status: 404 },
+      )
+    }
+
+    return json({
+      success: true,
+      data: {
+        slug: site.slug,
+      },
+    })
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load public site'
+
+    return json(
+      {
+        success: false,
+        error: message,
+      },
+      { status: 500 },
+    )
+  }
+}
+
 const createSite = async (request: Request, env: Env) => {
   let payload: CreateSiteInput
 
@@ -587,6 +647,10 @@ const worker: WorkerHandler<Env> = {
 
     if (pathname === '/api/sites' && request.method === 'POST') {
       return createSite(request, env)
+    }
+
+    if (request.method === 'GET' && pathname.startsWith('/api/public/')) {
+      return getPublicSite(pathname, env)
     }
 
     if (request.method === 'POST' && pathname.endsWith('/check')) {
