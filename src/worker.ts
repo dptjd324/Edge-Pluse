@@ -102,8 +102,9 @@ const createSlugBase = (value: string) =>
     .replace(/^-+|-+$/g, '')
     .replace(/-{2,}/g, '-')
 
-const parseSiteId = (pathname: string) => {
-  const match = pathname.match(/^\/api\/sites\/(\d+)$/)
+const parseSiteIdFromPath = (pathname: string, suffix = '') => {
+  const escapedSuffix = suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = pathname.match(new RegExp(`^/api/sites/(\\d+)${escapedSuffix}$`))
 
   if (!match) {
     return null
@@ -166,6 +167,16 @@ const generateUniqueSlug = async (name: string, env: Env) => {
     slug = `${slugBase}-${suffix}`
   }
 }
+
+const getSiteById = async (siteId: number, env: Env) =>
+  env.edgepulse_db
+    .prepare(
+      `SELECT id, name, url, slug, check_interval, is_active, created_at, updated_at
+       FROM sites
+       WHERE id = ?`,
+    )
+    .bind(siteId)
+    .first<Site>()
 
 const storeCheckResult = async (
   siteId: number,
@@ -240,6 +251,107 @@ export const monitorSite = async (site: MonitorableSite, env: Env) => {
   }
 
   return storeCheckResult(site.id, result, env)
+}
+
+const createSiteCheck = async (pathname: string, env: Env) => {
+  const siteId = parseSiteIdFromPath(pathname, '/check')
+
+  if (siteId === null) {
+    return notFound()
+  }
+
+  try {
+    const site = await getSiteById(siteId, env)
+
+    if (!site) {
+      return json(
+        {
+          success: false,
+          error: 'Site not found',
+        },
+        { status: 404 },
+      )
+    }
+
+    const check = await monitorSite(
+      {
+        id: site.id,
+        url: site.url,
+      },
+      env,
+    )
+
+    return json(
+      {
+        success: true,
+        data: {
+          check,
+        },
+      },
+      { status: 201 },
+    )
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to create site check'
+
+    return json(
+      {
+        success: false,
+        error: message,
+      },
+      { status: 500 },
+    )
+  }
+}
+
+const getSiteChecks = async (pathname: string, env: Env) => {
+  const siteId = parseSiteIdFromPath(pathname, '/checks')
+
+  if (siteId === null) {
+    return notFound()
+  }
+
+  try {
+    const site = await getSiteById(siteId, env)
+
+    if (!site) {
+      return json(
+        {
+          success: false,
+          error: 'Site not found',
+        },
+        { status: 404 },
+      )
+    }
+
+    const result = await env.edgepulse_db
+      .prepare(
+        `SELECT id, site_id, status, status_code, response_time, error_message, checked_at
+         FROM checks
+         WHERE site_id = ?
+         ORDER BY checked_at DESC, id DESC`,
+      )
+      .bind(siteId)
+      .all<SiteCheck>()
+
+    return json({
+      success: true,
+      data: {
+        checks: result.results,
+      },
+    })
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Failed to load site checks'
+
+    return json(
+      {
+        success: false,
+        error: message,
+      },
+      { status: 500 },
+    )
+  }
 }
 
 const getSites = async (env: Env) => {
@@ -343,17 +455,14 @@ const createSite = async (request: Request, env: Env) => {
 }
 
 const deleteSite = async (pathname: string, env: Env) => {
-  const siteId = parseSiteId(pathname)
+  const siteId = parseSiteIdFromPath(pathname)
 
   if (siteId === null) {
     return notFound()
   }
 
   try {
-    const existingSite = await env.edgepulse_db
-      .prepare('SELECT id FROM sites WHERE id = ?')
-      .bind(siteId)
-      .first<{ id: number }>()
+    const existingSite = await getSiteById(siteId, env)
 
     if (!existingSite) {
       return json(
@@ -434,6 +543,14 @@ const worker: WorkerHandler<Env> = {
 
     if (pathname === '/api/sites' && request.method === 'POST') {
       return createSite(request, env)
+    }
+
+    if (request.method === 'POST' && pathname.endsWith('/check')) {
+      return createSiteCheck(pathname, env)
+    }
+
+    if (request.method === 'GET' && pathname.endsWith('/checks')) {
+      return getSiteChecks(pathname, env)
     }
 
     if (request.method === 'DELETE' && pathname.startsWith('/api/sites/')) {
