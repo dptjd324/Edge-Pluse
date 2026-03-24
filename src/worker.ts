@@ -89,6 +89,12 @@ interface MonitoringResult {
   errorMessage: string | null
 }
 
+interface MonitoringBatchResult {
+  total: number
+  completed: number
+  failed: number
+}
+
 const json = <T>(payload: ApiResponse<T>, init?: ResponseInit) =>
   Response.json(payload, init)
 
@@ -274,6 +280,21 @@ export const monitorSite = async (site: MonitorableSite, env: Env) => {
   }
 
   return storeCheckResult(site.id, result, env)
+}
+
+const monitorActiveSites = async (env: Env) => {
+  const activeSites = await getActiveSites(env)
+  const settledResults = await Promise.allSettled(
+    activeSites.map((site) => monitorSite(site, env)),
+  )
+
+  const failed = settledResults.filter((result) => result.status === 'rejected').length
+
+  return {
+    total: activeSites.length,
+    completed: activeSites.length - failed,
+    failed,
+  } satisfies MonitoringBatchResult
 }
 
 const createSiteCheck = async (pathname: string, env: Env) => {
@@ -584,9 +605,11 @@ const worker: WorkerHandler<Env> = {
   },
   async scheduled(_controller, env, ctx) {
     const monitoringJob = (async () => {
-      const activeSites = await getActiveSites(env)
+      const batchResult = await monitorActiveSites(env)
 
-      await Promise.all(activeSites.map((site) => monitorSite(site, env)))
+      if (batchResult.failed > 0) {
+        throw new Error(`Scheduled monitoring failed for ${batchResult.failed} site(s)`)
+      }
     })()
 
     ctx.waitUntil(monitoringJob)
