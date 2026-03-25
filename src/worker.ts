@@ -91,6 +91,8 @@ interface WorkerHandler<Environment> {
 interface MonitorableSite {
   id: number
   url: string
+  check_interval: number
+  last_checked_at: string | null
 }
 
 interface MonitoringResult {
@@ -106,8 +108,75 @@ interface MonitoringBatchResult {
   failed: number
 }
 
+let schemaInitializationPromise: Promise<void> | null = null
+
 const json = <T>(payload: ApiResponse<T>, init?: ResponseInit) =>
   Response.json(payload, init)
+
+const initializeDatabase = async (env: Env) => {
+  await env.edgepulse_db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS sites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        check_interval INTEGER NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (check_interval > 0),
+        CHECK (is_active IN (0, 1))
+      )`,
+    )
+    .run()
+
+  await env.edgepulse_db
+    .prepare('CREATE INDEX IF NOT EXISTS idx_sites_slug ON sites (slug)')
+    .run()
+
+  await env.edgepulse_db
+    .prepare('CREATE INDEX IF NOT EXISTS idx_sites_is_active ON sites (is_active)')
+    .run()
+
+  await env.edgepulse_db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        status_code INTEGER,
+        response_time INTEGER,
+        error_message TEXT,
+        checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (site_id) REFERENCES sites (id) ON DELETE CASCADE,
+        CHECK (status IN ('up', 'down')),
+        CHECK (response_time IS NULL OR response_time >= 0)
+      )`,
+    )
+    .run()
+
+  await env.edgepulse_db
+    .prepare('CREATE INDEX IF NOT EXISTS idx_checks_site_id ON checks (site_id)')
+    .run()
+
+  await env.edgepulse_db
+    .prepare(
+      'CREATE INDEX IF NOT EXISTS idx_checks_site_checked_at ON checks (site_id, checked_at DESC)',
+    )
+    .run()
+}
+
+const ensureDatabaseSchema = (env: Env) => {
+  if (schemaInitializationPromise === null) {
+    schemaInitializationPromise = initializeDatabase(env).catch((error) => {
+      schemaInitializationPromise = null
+      throw error
+    })
+  }
+
+  return schemaInitializationPromise
+}
 
 const serveAppAsset = async (request: Request, env: Env) => {
   const response = await env.ASSETS.fetch(request)
@@ -241,14 +310,38 @@ const getSiteBySlug = async (slug: string, env: Env) =>
 const getActiveSites = async (env: Env) => {
   const result = await env.edgepulse_db
     .prepare(
-      `SELECT id, url
+      `SELECT sites.id, sites.url, sites.check_interval, MAX(checks.checked_at) AS last_checked_at
        FROM sites
+       LEFT JOIN checks ON checks.site_id = sites.id
        WHERE is_active = 1
+       GROUP BY sites.id, sites.url, sites.check_interval
        ORDER BY id ASC`,
     )
     .all<MonitorableSite>()
 
   return result.results
+}
+
+const parseStoredTimestamp = (value: string) => {
+  const isoValue = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`
+
+  return Date.parse(isoValue)
+}
+
+const isSiteDueForMonitoring = (site: MonitorableSite, now: number) => {
+  if (site.last_checked_at === null) {
+    return true
+  }
+
+  const lastCheckedAt = parseStoredTimestamp(site.last_checked_at)
+
+  if (Number.isNaN(lastCheckedAt)) {
+    return true
+  }
+
+  const intervalInMs = site.check_interval * 60 * 1000
+
+  return now - lastCheckedAt >= intervalInMs
 }
 
 const getRecentChecksBySiteId = async (siteId: number, env: Env) => {
@@ -343,15 +436,17 @@ export const monitorSite = async (site: MonitorableSite, env: Env) => {
 
 const monitorActiveSites = async (env: Env) => {
   const activeSites = await getActiveSites(env)
+  const now = Date.now()
+  const dueSites = activeSites.filter((site) => isSiteDueForMonitoring(site, now))
   const settledResults = await Promise.allSettled(
-    activeSites.map((site) => monitorSite(site, env)),
+    dueSites.map((site) => monitorSite(site, env)),
   )
 
   const failed = settledResults.filter((result) => result.status === 'rejected').length
 
   return {
-    total: activeSites.length,
-    completed: activeSites.length - failed,
+    total: dueSites.length,
+    completed: dueSites.length - failed,
     failed,
   } satisfies MonitoringBatchResult
 }
@@ -380,6 +475,8 @@ const createSiteCheck = async (pathname: string, env: Env) => {
       {
         id: site.id,
         url: site.url,
+        check_interval: site.check_interval,
+        last_checked_at: null,
       },
       env,
     )
@@ -649,6 +746,8 @@ const deleteSite = async (pathname: string, env: Env) => {
 
 const worker: WorkerHandler<Env> = {
   async fetch(request, env) {
+    await ensureDatabaseSchema(env)
+
     const { pathname } = new URL(request.url)
 
     if (!pathname.startsWith('/api') && pathname !== '/health') {
@@ -709,6 +808,8 @@ const worker: WorkerHandler<Env> = {
     return notFound()
   },
   async scheduled(_controller, env, ctx) {
+    await ensureDatabaseSchema(env)
+
     const monitoringJob = (async () => {
       const batchResult = await monitorActiveSites(env)
 

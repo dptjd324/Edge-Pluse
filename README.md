@@ -1,73 +1,80 @@
-# React + TypeScript + Vite
+# EdgePulse
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+EdgePulse is a serverless uptime monitoring project built with React, TypeScript, Cloudflare Workers, and D1.
 
-Currently, two official plugins are available:
+It provides:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- site registration and deletion
+- uptime checks and response-time tracking
+- recent check history per site
+- a simple monitoring dashboard
+- a public status API by site slug
 
-## React Compiler
+## Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- frontend: React 19 + Vite
+- backend: Cloudflare Workers
+- database: Cloudflare D1
 
-## Expanding the ESLint configuration
+## Available Scripts
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- `npm run dev`: start the Vite frontend dev server
+- `npm run dev:worker`: start the Cloudflare Worker locally on `127.0.0.1:8787`
+- `npm run db:migrate:local`: apply D1 migrations to the local database
+- `npm run db:migrate:remote`: apply D1 migrations to the remote Cloudflare database
+- `npm run build`: build the frontend bundle
+- `npm run lint`: run ESLint
+- `npm run deploy`: build and deploy with Wrangler
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Local Development
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+The frontend and API run as separate local processes.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+1. Apply local D1 migrations:
+
+```bash
+npm run db:migrate:local
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+2. Start the Worker:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev:worker
 ```
+
+3. In another terminal, start the frontend:
+
+```bash
+npm run dev
+```
+
+4. Open the Vite app in the browser.
+
+The Vite dev server proxies these paths to the Worker running on `http://127.0.0.1:8787`:
+
+- `/api`
+- `/health`
+
+Because of that, frontend requests such as `fetch('/api/sites')` and the `View site API` link work correctly during local development.
+
+## Main API Routes
+
+- `GET /health`
+- `GET /api/sites`
+- `POST /api/sites`
+- `DELETE /api/sites/:id`
+- `POST /api/sites/:id/check`
+- `GET /api/sites/:id/checks`
+- `GET /api/public/:slug`
+
+## Database
+
+D1 migrations are stored in [`db/migrations`](./db/migrations):
+
+- `0001_create_sites.sql`
+- `0002_create_checks.sql`
+
+## Notes
+
+- The current frontend is a read-only monitoring dashboard.
+- Site creation, deletion, and public status access are currently exposed through API routes rather than dedicated UI flows.

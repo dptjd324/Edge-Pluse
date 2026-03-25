@@ -11,7 +11,8 @@
     {
       "binding": "edgepulse_db",
       "database_name": "edgepulse-db",
-      "database_id": "793d7b08-c69d-4905-8408-a25167301126"
+      "database_id": "793d7b08-c69d-4905-8408-a25167301126",
+      "migrations_dir": "db/migrations"
     }
   ],
   "observability": {
